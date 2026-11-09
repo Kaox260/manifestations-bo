@@ -1,5 +1,7 @@
 import uuid
 
+import sys
+
 import pytest
 from sqlalchemy import select
 
@@ -43,7 +45,7 @@ def test_save_dedup_and_task(db):
 
 def test_discovery_never_crashes(monkeypatch):
     monkeypatch.delenv("DISPLAY", raising=False)
-    monkeypatch.setattr(tk.sys, "platform", "linux")
+    monkeypatch.setattr(sys, "platform", "linux")
     r = tk.discover_tiktok_urls("x")  # DISPLAY absent ou playwright manquant -> loggé
     assert r.urls == []
     assert tk.extract_page_metadata("https://www.tiktok.com/@u/video/1") == {}

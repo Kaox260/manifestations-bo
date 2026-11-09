@@ -7,14 +7,22 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import SessionLocal
 from app.models import Event, Source, Task
 from app.schemas import EventCreate, TaskStatus
-from app.services import event_store, ocr, perplexity, whisper
+from app.services import event_store, ocr, perplexity, perplexity_web, whisper
 
 logger = logging.getLogger(__name__)
 
 TASK_TYPE = "analyze_source"
+
+
+def call_model(payload: dict[str, Any]) -> dict[str, Any]:
+    """Interroge Perplexity selon PERPLEXITY_MODE : `web` (défaut, cookie) ou `api`."""
+    if settings.perplexity_mode == "api":
+        return perplexity.call_perplexity(payload)
+    return perplexity_web.call_perplexity_web(payload)
 
 
 def _find_task(db: Session, source_id: uuid.UUID, task_id: uuid.UUID | None) -> Task | None:
@@ -120,7 +128,7 @@ def analyze_source(
             db.commit()
 
         payload = perplexity.build_analysis_payload(source, transcript, ocr_text, comments)
-        response = perplexity.call_perplexity(payload)
+        response = call_model(payload)
         data = perplexity.parse_perplexity_response(response, source_id=source.id)
 
         event, action = _upsert_event(db, data)

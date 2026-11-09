@@ -9,7 +9,6 @@ import logging
 import os
 import random
 import re
-import sys
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models import Source, Task
+from app.services.browser import launch as _launch
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +32,6 @@ TASK_TYPE = "analyze_source"
 SEARCH_URL = "https://www.tiktok.com/search/video"
 MAX_URLS = 30
 MAX_SCROLL = 4
-VIEWPORT = {"width": 1280, "height": 800}
-LOCALE = "fr-FR"
-TIMEZONE = "Europe/Paris"
 NAV_TIMEOUT_MS = 30_000
 
 _VIDEO_PATH = re.compile(r"^/@([^/?#]+)/video/(\d+)")
@@ -85,19 +82,6 @@ def is_relevant(metadata: dict[str, Any], query: str) -> bool:
 
 def _pause() -> int:
     return int(random.uniform(1.5, 2.0) * 1000)
-
-
-def _check_display() -> None:
-    if sys.platform.startswith("linux") and not os.environ.get("DISPLAY"):
-        raise RuntimeError("DISPLAY is not set: start Xvfb and export DISPLAY (e.g. :99)")
-
-
-def _launch(p):
-    """Chromium headed (headless=False) ; le rendu part sur le DISPLAY Xvfb."""
-    _check_display()
-    browser = p.chromium.launch(headless=False)
-    context = browser.new_context(viewport=VIEWPORT, locale=LOCALE, timezone_id=TIMEZONE)
-    return browser, context
 
 
 def _screenshot_path(prefix: str) -> Path:

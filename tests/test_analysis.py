@@ -28,7 +28,7 @@ def fake_api(monkeypatch, content, seen=None):
             raise content
         return {"choices": [{"message": {"content": json.dumps(content)}}]}
 
-    monkeypatch.setattr(px, "call_perplexity", call)
+    monkeypatch.setattr(analysis, "call_model", call)
 
 
 def setup(db, **meta):

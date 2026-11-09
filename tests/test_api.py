@@ -258,7 +258,7 @@ def test_analysis_with_mocked_perplexity_feeds_api(client, auth_headers, db, mon
 
     reply = event_body(sid, needs_human_review=False)
     monkeypatch.setattr(
-        px, "call_perplexity",
+        analysis, "call_model",
         lambda payload: {"choices": [{"message": {"content": json.dumps(reply)}}]},
     )
     # `db` et `client` sont deux sessions sur la même base en mémoire.
