@@ -1,0 +1,18 @@
+[Unit]
+Description=Manifestations worker (tâches d'analyse et de découverte)
+After=network.target postgresql.service
+
+[Service]
+User=manifestations
+WorkingDirectory=/opt/manifestations-bo
+EnvironmentFile=/opt/manifestations-bo/.env
+# xvfb-run fournit le DISPLAY requis par Chromium headed.
+ExecStart=/usr/bin/xvfb-run -a --server-args="-screen 0 1280x800x24" /opt/manifestations-bo/.venv/bin/python -m app.worker run
+Restart=always
+RestartSec=10
+TimeoutStopSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

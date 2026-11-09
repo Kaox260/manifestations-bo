@@ -1,9 +1,9 @@
 import uuid
 from datetime import date, datetime
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Any, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, computed_field, model_validator
 
 
 class EventStatus(StrEnum):
@@ -24,57 +24,112 @@ class ORMModel(BaseModel):
 
 
 # ---- Sources ----
+Platform = Literal["tiktok", "youtube", "web", "x", "facebook"]
+Reliability = Literal["official", "press", "social", "unknown"]
+ActorRole = Literal["police", "gendarmerie", "protester", "bystander", "journalist", "unknown"]
+
+
 class SourceCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=255)
-    source_type: str = Field(min_length=1, max_length=50)
-    url: str | None = None
-    raw_metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-class SourceRead(ORMModel, SourceCreate):
-    id: uuid.UUID
-    created_at: datetime
+    platform: Platform
+    url: HttpUrl
+    title: Optional[str] = None
+    raw_text: Optional[str] = None
+    published_at: Optional[datetime] = None
+    screenshot_path: Optional[str] = None
+    raw_metadata: Optional[dict] = None
+    reliability: Reliability = "unknown"
 
 
 # ---- Events ----
 class EventCreate(BaseModel):
-    source_id: uuid.UUID | None = None
-    title: str = Field(min_length=1, max_length=500)
-    description: str | None = None
-    event_type: str = Field(min_length=1, max_length=50)
-    city: str | None = Field(default=None, max_length=255)
-    department: str | None = Field(default=None, max_length=100)
-    region: str | None = Field(default=None, max_length=100)
-    latitude: float | None = Field(default=None, ge=-90, le=90)
-    longitude: float | None = Field(default=None, ge=-180, le=180)
-    occurred_on: date | None = None
-    status: EventStatus = EventStatus.pending
-    participants_estimate: int | None = Field(default=None, ge=0)
-    confidence: float | None = Field(default=None, ge=0, le=1)
-    raw_metadata: dict[str, Any] = Field(default_factory=dict)
+    source_id: uuid.UUID
+    event_type: Literal[
+        "police_violence_allegation",
+        "police_injury",
+        "protester_injury",
+        "arrest",
+        "property_damage",
+        "use_of_force",
+        "other",
+    ]
+    occurred_on: date
+    city: str
+    location_raw: Optional[str] = None
+    description: str
+    actors: List[ActorRole]
+    victims: List[ActorRole]
+    injury_level: Literal["none", "minor", "serious", "unknown"] = "unknown"
+    legal_status: Literal["none", "complaint", "investigation", "prosecution", "unknown"] = "unknown"
+    verification_status: Literal["official", "corroborated", "alleged", "unverified", "disputed"]
+    confidence: int = Field(ge=0, le=5)
+    source_urls: List[HttpUrl]
+    needs_human_review: bool = True
+    extracted_keywords: List[str] = Field(default_factory=list)
+    # Coordonnees precises optionnelles ; sinon point approximatif base sur la ville.
+    latitude: Optional[float] = Field(default=None, ge=-90, le=90)
+    longitude: Optional[float] = Field(default=None, ge=-180, le=180)
+
+    @model_validator(mode="after")
+    def check_confidence_vs_verification(self) -> "EventCreate":
+        if self.verification_status == "official" and self.confidence < 4:
+            raise ValueError("verification_status 'official' requires confidence >= 4")
+        if self.verification_status == "unverified" and self.confidence > 2:
+            raise ValueError("verification_status 'unverified' requires confidence <= 2")
+        return self
+
+    @computed_field
+    @property
+    def publishable(self) -> bool:
+        """Un evenement a revoir par un humain n'est jamais publie par defaut."""
+        return not self.needs_human_review
 
 
-class EventRead(ORMModel, EventCreate):
+class SourceResponse(ORMModel):
     id: uuid.UUID
+    platform: str
+    url: str
+    title: Optional[str] = None
+    raw_text: Optional[str] = None
+    published_at: Optional[datetime] = None
+    screenshot_path: Optional[str] = None
+    raw_metadata: Optional[dict] = None
+    reliability: str
     created_at: datetime
-    updated_at: datetime
+
+
+class EventUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    status: Optional[EventStatus] = None
+    confidence: Optional[int] = Field(default=None, ge=0, le=5)
+    needs_review: Optional[bool] = None
+    description: Optional[str] = Field(default=None, min_length=1)
+    location_raw: Optional[str] = None
+
+
+class EventResponse(ORMModel):
+    id: uuid.UUID
+    occurred_on: date
+    city: str
+    location_raw: Optional[str] = None
+    event_type: str
+    description: str
+    status: str
+    confidence: int
+    needs_review: bool
+    created_at: datetime
 
 
 # ---- GeoJSON ----
-class GeoJSONPoint(BaseModel):
-    type: Literal["Point"] = "Point"
-    coordinates: tuple[float, float]  # [longitude, latitude]
-
-
 class GeoJSONFeature(BaseModel):
     type: Literal["Feature"] = "Feature"
-    geometry: GeoJSONPoint
-    properties: dict[str, Any]
+    geometry: dict
+    properties: dict
 
 
-class GeoJSONFeatureCollection(BaseModel):
+class GeoJSONResponse(BaseModel):
     type: Literal["FeatureCollection"] = "FeatureCollection"
-    features: list[GeoJSONFeature]
+    features: List[GeoJSONFeature]
 
 
 # ---- Tasks ----
@@ -83,8 +138,7 @@ class TaskCreate(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class TaskUpdate(BaseModel):
-    status: TaskStatus | None = None
+class TaskResultUpdate(BaseModel):
     result: dict[str, Any] | None = None
     error: str | None = None
 

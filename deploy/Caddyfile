@@ -1,0 +1,5 @@
+# HTTPS automatique (Let's Encrypt). Remplacez le domaine.
+manifestations.example.org {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000
+}

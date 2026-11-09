@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carte des événements</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<style>
+  :root { --bg:#fff; --fg:#1d2733; --muted:#5b6673; --line:#d9dee4; --panel:#f5f7f9; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; font: 14px/1.4 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+  .app { display: flex; flex-direction: column; height: 100%; }
+  header { padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 0 8px; font-size: 16px; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
+  .filters label { display: flex; flex-direction: column; font-size: 12px; color: var(--muted); gap: 2px; }
+  .filters input, .filters select, .filters button { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--fg); min-width: 0; }
+  .filters button { cursor: pointer; background: #1d2733; color: #fff; border-color: #1d2733; }
+  .filters button.secondary { background: #fff; color: var(--fg); border-color: var(--line); }
+  .filters button:disabled { opacity: .6; cursor: wait; }
+  .meta { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12px; color: var(--muted); align-items: center; }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; margin-right: 10px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; border: 1px solid rgba(0,0,0,.4); }
+  #msg { color: #b3261e; }
+  #map { flex: 1; min-height: 0; }
+  .popup h3 { margin: 0 0 4px; font-size: 14px; }
+  .popup dl { margin: 6px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; }
+  .popup dt { color: var(--muted); }
+  .popup dd { margin: 0; }
+  .popup p { margin: 4px 0 0; max-height: 8em; overflow: auto; }
+  @media (max-width: 600px) {
+    header { padding: 8px 12px; }
+    .filters label { flex: 1 1 calc(50% - 12px); }
+    .filters input, .filters select { width: 100%; }
+    .filters button { flex: 1 1 calc(50% - 12px); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>Carte des événements</h1>
+    <form class="filters" id="filters" autocomplete="off">
+      <label>Du <input type="date" id="f-from"></label>
+      <label>Au <input type="date" id="f-to"></label>
+      <label>Ville <select id="f-city"><option value="">Toutes</option></select></label>
+      <label>Type <select id="f-type"><option value="">Tous</option></select></label>
+      <label>Statut <select id="f-status"><option value="">Tous</option></select></label>
+      <label>Confiance min.
+        <select id="f-conf">
+          <option value="0">0</option><option value="1">1</option><option value="2">2</option>
+          <option value="3">3</option><option value="4">4</option><option value="5">5</option>
+        </select>
+      </label>
+      <button type="button" id="refresh">Rafraîchir</button>
+      <button type="button" id="reset" class="secondary">Réinitialiser</button>
+    </form>
+    <div class="meta">
+      <span id="count">Chargement…</span>
+      <span id="msg" role="alert"></span>
+      <span class="legend" id="legend"></span>
+    </div>
+  </header>
+  <div id="map"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<script>
+"use strict";
+const GEOJSON_URL = "/events.geojson";
+
+const STATUS = {
+  official:     { label: "Officiel",     color: "#2e9e4f" },
+  corroborated: { label: "Corroboré",    color: "#2c6fd6" },
+  alleged:      { label: "Allégation",   color: "#f08c1a" },
+  unverified:   { label: "Non vérifié",  color: "#8a8f96" },
+  disputed:     { label: "Contesté",     color: "#d93025" },
+};
+const UNKNOWN_COLOR = "#8a8f96";
+const TYPES = {
+  police_violence_allegation: "Allégation de violence policière",
+  police_injury: "Policier blessé",
+  protester_injury: "Manifestant blessé",
+  arrest: "Interpellation",
+  property_damage: "Dégradations",
+  use_of_force: "Usage de la force",
+  other: "Autre",
+};
+
+const $ = id => document.getElementById(id);
+const map = L.map("map").setView([46.6, 2.4], 6);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 18,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+}).addTo(map);
+const layer = L.layerGroup().addTo(map);
+
+let features = [];      // features avec une position valide
+let firstFit = true;
+
+// ---- utilitaires ---------------------------------------------------------
+const typeLabel = t => TYPES[t] || t || "—";
+const statusInfo = s => STATUS[s] || { label: s || "—", color: UNKNOWN_COLOR };
+
+// Retourne [lat, lon] ou null si la géométrie est absente / invalide.
+function coords(f) {
+  const c = f && f.geometry && f.geometry.type === "Point" ? f.geometry.coordinates : null;
+  if (!Array.isArray(c) || c.length < 2) return null;
+  const lon = Number(c[0]), lat = Number(c[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return [lat, lon];
+}
+
+// Décalage déterministe (~±800 m) pour que les événements d'une même ville
+// (position approximative) ne soient pas empilés exactement.
+function jitter(id, [lat, lon]) {
+  let h = 0;
+  for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  const a = ((h & 0xffff) / 0xffff - 0.5) * 0.016;
+  const b = (((h >>> 16) & 0xffff) / 0xffff - 0.5) * 0.016;
+  return [lat + a, lon + b];
+}
+
+function row(dl, term, value) {
+  const dt = document.createElement("dt"); dt.textContent = term;
+  const dd = document.createElement("dd"); dd.textContent = value;
+  dl.append(dt, dd);
+}
+
+// Contenu issu d'un LLM : uniquement textContent, jamais innerHTML.
+function popup(p, approx) {
+  const root = document.createElement("div"); root.className = "popup";
+  const h = document.createElement("h3"); h.textContent = p.city || "Ville inconnue";
+  const desc = document.createElement("p"); desc.textContent = p.description || "";
+  const dl = document.createElement("dl");
+  row(dl, "Type", typeLabel(p.event_type));
+  row(dl, "Date", p.occurred_on || "—");
+  row(dl, "Statut", statusInfo(p.verification_status).label);
+  row(dl, "Confiance", p.confidence != null ? p.confidence + " / 5" : "—");
+  row(dl, "Sources", p.sources_count != null ? String(p.sources_count) : "—");
+  if (approx) row(dl, "Position", "approximative (ville)");
+  root.append(h, desc, dl);
+  return root;
+}
+
+// ---- filtres -------------------------------------------------------------
+function fillSelect(sel, values, labeler) {
+  const keep = sel.value;
+  while (sel.options.length > 1) sel.remove(1);
+  for (const v of values) {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = labeler ? labeler(v) : v;
+    sel.append(o);
+  }
+  if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+}
+
+function updateFilterOptions() {
+  const uniq = key => [...new Set(features.map(f => f.properties[key]).filter(Boolean))]
+    .sort((a, b) => String(a).localeCompare(String(b), "fr"));
+  fillSelect($("f-city"), uniq("city"));
+  fillSelect($("f-type"), uniq("event_type"), typeLabel);
+  fillSelect($("f-status"),
+    Object.keys(STATUS).filter(s => features.some(f => f.properties.verification_status === s)),
+    s => STATUS[s].label);
+}
+
+function passes(p) {
+  const from = $("f-from").value, to = $("f-to").value;
+  if (from && (!p.occurred_on || p.occurred_on < from)) return false;
+  if (to && (!p.occurred_on || p.occurred_on > to)) return false;
+  if ($("f-city").value && p.city !== $("f-city").value) return false;
+  if ($("f-type").value && p.event_type !== $("f-type").value) return false;
+  if ($("f-status").value && p.verification_status !== $("f-status").value) return false;
+  if ((p.confidence ?? 0) < Number($("f-conf").value)) return false;
+  return true;
+}
+
+// ---- rendu ---------------------------------------------------------------
+function render() {
+  layer.clearLayers();
+  const pts = [];
+  for (const f of features) {
+    const p = f.properties;
+    if (!passes(p)) continue;
+    const approx = p.geo_precision === "city";
+    let pos = coords(f);
+    if (approx) pos = jitter(p.id, pos);
+    L.circleMarker(pos, {
+      radius: 8, color: "#222", weight: 1,
+      fillColor: statusInfo(p.verification_status).color,
+      fillOpacity: approx ? 0.55 : 0.9,
+      dashArray: approx ? "3 3" : null,
+    }).bindPopup(() => popup(p, approx), { maxWidth: 300 }).addTo(layer);
+    pts.push(pos);
+  }
+  const n = pts.length;
+  $("count").textContent = `${n} événement${n > 1 ? "s" : ""} affiché${n > 1 ? "s" : ""} sur ${features.length}`;
+  if (n && firstFit) {
+    map.fitBounds(L.latLngBounds(pts).pad(0.2), { maxZoom: 12 });
+    firstFit = false;
+  }
+}
+
+async function load() {
+  const btn = $("refresh");
+  btn.disabled = true; $("msg").textContent = "";
+  try {
+    const res = await fetch(GEOJSON_URL, { headers: { Accept: "application/json" }, cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
+    if (!data || !Array.isArray(data.features)) throw new Error("réponse GeoJSON invalide");
+    const all = data.features.filter(f => f && f.properties);
+    features = all.filter(f => coords(f));          // latitude/longitude absentes ou invalides : ignorées
+    const skipped = all.length - features.length;
+    updateFilterOptions();
+    firstFit = true;
+    render();
+    if (skipped) $("msg").textContent = `${skipped} événement(s) sans position, non affiché(s).`;
+  } catch (err) {
+    $("msg").textContent = "Impossible de charger les événements (" + err.message + ").";
+    $("count").textContent = "";
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---- init ----------------------------------------------------------------
+for (const s of Object.values(STATUS)) {
+  const span = document.createElement("span");
+  const dot = document.createElement("i"); dot.className = "dot"; dot.style.background = s.color;
+  span.append(dot, s.label);
+  $("legend").append(span);
+}
+$("filters").addEventListener("input", () => { firstFit = true; render(); });
+$("filters").addEventListener("submit", e => e.preventDefault());
+$("refresh").addEventListener("click", load);
+$("reset").addEventListener("click", () => { $("filters").reset(); firstFit = true; render(); });
+load();
+</script>
+</body>
+</html>

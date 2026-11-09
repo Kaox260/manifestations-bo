@@ -1,7 +1,9 @@
 import logging
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.routers import events, sources, tasks
@@ -20,6 +22,9 @@ app.add_middleware(
 app.include_router(events.router)
 app.include_router(sources.router)
 app.include_router(tasks.router)
+
+# Carte publique : /static/map.html
+app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent.parent / "static"), name="static")
 
 
 @app.get("/health", tags=["health"])
